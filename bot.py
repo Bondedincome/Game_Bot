@@ -23,9 +23,9 @@ async def send_new_game_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int
         parse_mode='Markdown',
         reply_markup=reply_markup
     )
-    context.chat_data['active_chat_id'] = chat_id
-    context.chat_data['active_msg_id'] = message.message_id
-    context.chat_data.pop('active_inline_msg_id', None)
+    context.user_data['active_chat_id'] = chat_id
+    context.user_data['active_msg_id'] = message.message_id
+    context.user_data.pop('active_inline_msg_id', None)
 
 async def edit_game_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup):
     """Edits an EXISTING message, handling both Inline Mode and DM Mode seamlessly."""
@@ -33,8 +33,8 @@ async def edit_game_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     
     # Determine target: Inline ID first, otherwise fall back to tracked DM IDs
     inline_msg_id = query.inline_message_id if query else None
-    chat_id = query.message.chat.id if (query and query.message) else context.chat_data.get('active_chat_id')
-    msg_id = query.message.message_id if (query and query.message) else context.chat_data.get('active_msg_id')
+    chat_id = query.message.chat.id if (query and query.message) else context.user_data.get('active_chat_id')
+    msg_id = query.message.message_id if (query and query.message) else context.user_data.get('active_msg_id')
     
     try:
         if inline_msg_id:
@@ -44,6 +44,9 @@ async def edit_game_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 parse_mode='Markdown',
                 reply_markup=reply_markup
             )
+            context.user_data['active_inline_msg_id'] = inline_msg_id
+            context.user_data.pop('active_chat_id', None)
+            context.user_data.pop('active_msg_id', None)
         elif chat_id and msg_id:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
@@ -52,6 +55,9 @@ async def edit_game_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 parse_mode='Markdown',
                 reply_markup=reply_markup
             )
+            context.user_data['active_chat_id'] = chat_id
+            context.user_data['active_msg_id'] = msg_id
+            context.user_data.pop('active_inline_msg_id', None)
     except Exception as e:
         logging.error(f"Error editing message: {e}")
 
@@ -65,7 +71,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineQueryResultArticle(
             id="tod", title="🎭 Truth or Dare",
             description="Start a multiplayer Truth or Dare game",
-            input_message_content=InputTextMessageContent("🎭 *Truth or Dare*\n\nTap below to choose a!", parse_mode='Markdown'),
+            input_message_content=InputTextMessageContent("🎭 *Truth or Dare*\n\nTap below to choose a category!", parse_mode='Markdown'),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📂 Choose Category", callback_data="tod_categories")]])
         ),
         InlineQueryResultArticle(
@@ -91,7 +97,7 @@ async def tod_show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE
     if update.callback_query:
         await update.callback_query.answer()
     
-    context.chat_data.pop('tod_category', None)
+    context.user_data.pop('tod_category', None)
     
     keyboard = [
         [InlineKeyboardButton("😂 Classic & Funny", callback_data="tod_cat_Classic & Funny")],
@@ -111,7 +117,7 @@ async def tod_show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def tod_show_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
     if update.callback_query:
         await update.callback_query.answer()
-    context.chat_data['tod_category'] = category
+    context.user_data['tod_category'] = category
     
     keyboard = [
         [InlineKeyboardButton("🤔 Truth", callback_data=f"tod_type_truth_{category}"), 
@@ -124,8 +130,8 @@ async def tod_show_type_selection(update: Update, context: ContextTypes.DEFAULT_
 async def tod_show_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str, prompt_type: str):
     if update.callback_query:
         await update.callback_query.answer()
-    context.chat_data['tod_category'] = category
-    context.chat_data['tod_type'] = prompt_type
+    context.user_data['tod_category'] = category
+    context.user_data['tod_type'] = prompt_type
     
     prompt_list = TRUTH_OR_DARE_DATA[category][prompt_type]
     prompt = random.choice(prompt_list)
@@ -151,10 +157,10 @@ async def wyr_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Store target info for the final reveal
     query = update.callback_query
     inline_msg_id = query.inline_message_id if query else None
-    chat_id = query.message.chat.id if (query and query.message) else context.chat_data.get('active_chat_id')
-    msg_id = query.message.message_id if (query and query.message) else context.chat_data.get('active_msg_id')
+    chat_id = query.message.chat.id if (query and query.message) else context.user_data.get('active_chat_id')
+    msg_id = query.message.message_id if (query and query.message) else context.user_data.get('active_msg_id')
 
-    context.chat_data['active_vote'] = {
+    context.user_data['active_vote'] = {
         'chat_id': chat_id,
         'msg_id': msg_id,
         'inline_msg_id': inline_msg_id,
@@ -174,7 +180,7 @@ async def vote_secret_wyr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    vote_data = context.chat_data.get('active_vote', {})
+    vote_data = context.user_data.get('active_vote', {})
     prompt = vote_data.get('prompt', 'this scenario')
     
     private_text = f"🤫 *Secret Vote*\n\nScenario: {prompt}\n\nTap your choice below:"
@@ -195,7 +201,7 @@ async def process_wyr_vote(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     query = update.callback_query
     await query.answer()
     
-    vote_data = context.chat_data.get('active_vote', {})
+    vote_data = context.user_data.get('active_vote', {})
     user_id = str(query.from_user.id)
     vote_data['votes'][user_id] = choice
     
@@ -243,7 +249,7 @@ async def process_wyr_vote(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         except Exception as e:
             logging.error(f"Error editing vote result: {e}")
             
-        context.chat_data.pop('active_vote', None)
+        context.user_data.pop('active_vote', None)
 
 # ==========================================
 # 20 QUESTIONS
@@ -254,7 +260,7 @@ async def start_20q(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
         
     game_data = random.choice(TWENTY_Q_WORDS)
-    context.chat_data['20q'] = {
+    context.user_data['20q'] = {
         'word': game_data['word'], 'category': game_data['category'], 'hints': game_data['hints'],
         'guesses': 0, 'max_guesses': 20, 'hints_used': 0
     }
@@ -271,15 +277,15 @@ async def start_20q(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_new_game_message(context, update.effective_chat.id, text, markup)
 
 async def handle_20q_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if '20q' not in context.chat_data:
+    if '20q' not in context.user_data:
         return
 
-    game = context.chat_data['20q']
+    game = context.user_data['20q']
     guess = update.message.text.lower().strip()
     
-    inline_msg_id = context.chat_data.get('active_inline_msg_id')
-    chat_id = context.chat_data.get('active_chat_id')
-    msg_id = context.chat_data.get('active_msg_id')
+    inline_msg_id = context.user_data.get('active_inline_msg_id')
+    chat_id = context.user_data.get('active_chat_id')
+    msg_id = context.user_data.get('active_msg_id')
     
     async def edit_it(text, markup):
         try:
@@ -300,7 +306,7 @@ async def handle_20q_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_text = f"🎮 *20 Questions*\n\nCategory: *{game['category']}*\n💡 Hint: {hint}\n({remaining} guesses left)"
             if game['guesses'] >= game['max_guesses']:
                 new_text += f"\n\n💀 Out of guesses! The word was *{game['word']}*."
-                del context.chat_data['20q']
+                del context.user_data['20q']
             
             await edit_it(new_text, InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q")]]))
         return
@@ -310,11 +316,11 @@ async def handle_20q_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if guess == game['word']:
         new_text = f"🎉 *Correct!* The word was *{game['word']}*.\nYou got it in {game['guesses']} guesses!"
-        del context.chat_data['20q']
+        del context.user_data['20q']
         await edit_it(new_text, InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q")]]))
     elif remaining <= 0:
         new_text = f"💀 *Game Over!* You ran out of guesses.\nThe word was *{game['word']}*."
-        del context.chat_data['20q']
+        del context.user_data['20q']
         await edit_it(new_text, InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q")]]))
     else:
         new_text = f"🎮 *20 Questions*\n\nCategory: *{game['category']}*\n❌ Incorrect. ({remaining} guesses left)."
@@ -372,7 +378,7 @@ def main():
     application.add_handler(InlineQueryHandler(inline_query))
     
     # 2. Command Handlers (For DM play)
-    application.add_handler(CommandHandler("start", tod_show_categories)) # Start goes straight to games
+    application.add_handler(CommandHandler("start", tod_show_categories))
     application.add_handler(CommandHandler("tod", tod_show_categories))
     application.add_handler(CommandHandler("wyr", wyr_start))
     application.add_handler(CommandHandler("20q", start_20q))
