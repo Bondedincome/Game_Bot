@@ -3,13 +3,57 @@ import random
 import logging
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, InlineQueryHandler, ChosenInlineResultHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, InlineQueryHandler
 
 # Import game data
-from game_data import TRUTH_OR_DARE_DATA, NHIE, WYR, CHEATING, TWENTY_Q_WORDS
+from game_data import TRUTH_OR_DARE_DATA, WYR, TWENTY_Q_WORDS
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# ==========================================
+# UNIVERSAL MESSAGE HELPERS
+# ==========================================
+
+async def send_new_game_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup):
+    """Sends a NEW message (for DM command mode) and tracks it for future edits."""
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+    context.chat_data['active_chat_id'] = chat_id
+    context.chat_data['active_msg_id'] = message.message_id
+    context.chat_data.pop('active_inline_msg_id', None)
+
+async def edit_game_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup):
+    """Edits an EXISTING message, handling both Inline Mode and DM Mode seamlessly."""
+    query = update.callback_query
+    
+    # Determine target: Inline ID first, otherwise fall back to tracked DM IDs
+    inline_msg_id = query.inline_message_id if query else None
+    chat_id = query.message.chat.id if (query and query.message) else context.chat_data.get('active_chat_id')
+    msg_id = query.message.message_id if (query and query.message) else context.chat_data.get('active_msg_id')
+    
+    try:
+        if inline_msg_id:
+            await context.bot.edit_message_text(
+                inline_message_id=inline_msg_id,
+                text=text,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        elif chat_id and msg_id:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=text,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+    except Exception as e:
+        logging.error(f"Error editing message: {e}")
 
 # ==========================================
 # INLINE MODE: THE "GAME CARD" DROP
@@ -17,13 +61,11 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Generates the menu that pops up when you type @BotName"""
-    query = update.inline_query.query
-    
     results = [
         InlineQueryResultArticle(
             id="tod", title="🎭 Truth or Dare",
             description="Start a multiplayer Truth or Dare game",
-            input_message_content=InputTextMessageContent("🎭 *Truth or Dare*\n\nTap below to choose a category!", parse_mode='Markdown'),
+            input_message_content=InputTextMessageContent("🎭 *Truth or Dare*\n\nTap below to choose a!", parse_mode='Markdown'),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📂 Choose Category", callback_data="tod_categories")]])
         ),
         InlineQueryResultArticle(
@@ -33,56 +75,22 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎲 Get Scenario", callback_data="wyr_start")]])
         ),
         InlineQueryResultArticle(
-            id="nhie", title="🙅‍♂️ Never Have I Ever",
-            description="Start a secret voting NHIE game",
-            input_message_content=InputTextMessageContent("🙅‍♂️ *Never Have I Ever*\n\nTap below to get a prompt!", parse_mode='Markdown'),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎲 Get Prompt", callback_data="nhie_start")]])
-        ),
-        InlineQueryResultArticle(
             id="20q", title="🎮 20 Questions",
             description="Guess the word in 20 tries",
             input_message_content=InputTextMessageContent("🎮 *20 Questions*\n\nTap below to start!", parse_mode='Markdown'),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🃏 Start Game", callback_data="start_20q_inline")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🃏 Start Game", callback_data="start_20q")]])
         )
     ]
-    
     await update.inline_query.answer(results, cache_time=0)
 
-async def chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tracks the message ID of the dropped game card so we can edit it later."""
-    # We store the chat_id and message_id globally for this chat session
-    # so buttons can edit this specific message.
-    context.chat_data['inline_game_msg_id'] = update.chosen_inline_result.message_id
-    # Note: chat_id is sometimes restricted in inline queries, so we rely on query.message.chat.id in callbacks
-
 # ==========================================
-# TRUTH OR DARE FLOW (IN-PLACE EDITING)
+# TRUTH OR DARE FLOW
 # ==========================================
-
-async def tod_edit_message(context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup):
-    """Helper to edit the inline game card in place."""
-    msg_id = context.chat_data.get('inline_game_msg_id')
-    # We need chat_id. If it's an inline message, we can get it from the last known context or we pass it.
-    # For safety, we'll fetch it from the active callback if available, otherwise default.
-    chat_id = context.chat_data.get('inline_game_chat_id')
-    
-    if msg_id and chat_id:
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=msg_id,
-                text=text, parse_mode='Markdown', reply_markup=reply_markup
-            )
-        except Exception:
-            pass
 
 async def tod_show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    if update.callback_query:
+        await update.callback_query.answer()
     
-    chat_id = query.message.chat.id
-    msg_id = query.message.message_id
-    context.chat_data['inline_game_chat_id'] = chat_id
-    context.chat_data['inline_game_msg_id'] = msg_id
     context.chat_data.pop('tod_category', None)
     
     keyboard = [
@@ -92,13 +100,17 @@ async def tod_show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("🎈 Party & Kids", callback_data="tod_cat_Party & Kids")],
         [InlineKeyboardButton("🔞 Spicy (18+)", callback_data="tod_cat_Spicy (18+)")]
     ]
-    
     text = "🎭 *Truth or Dare*\n\nSelect a category to begin:"
-    await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.callback_query:
+        await edit_game_message(update, context, text, markup)
+    else:
+        await send_new_game_message(context, update.effective_chat.id, text, markup)
 
 async def tod_show_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
-    query = update.callback_query
-    await query.answer()
+    if update.callback_query:
+        await update.callback_query.answer()
     context.chat_data['tod_category'] = category
     
     keyboard = [
@@ -106,13 +118,12 @@ async def tod_show_type_selection(update: Update, context: ContextTypes.DEFAULT_
          InlineKeyboardButton("😈 Dare", callback_data=f"tod_type_dare_{category}")],
         [InlineKeyboardButton("🔙 Change Category", callback_data="tod_categories")]
     ]
-    
     text = f"🎭 *Truth or Dare*\n\nCategory: *{category}*\n\nNow, choose your poison:"
-    await context.bot.edit_message_text(chat_id=query.message.chat.id, message_id=query.message.message_id, text=text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_game_message(update, context, text, InlineKeyboardMarkup(keyboard))
 
 async def tod_show_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str, prompt_type: str):
-    query = update.callback_query
-    await query.answer()
+    if update.callback_query:
+        await update.callback_query.answer()
     context.chat_data['tod_category'] = category
     context.chat_data['tod_type'] = prompt_type
     
@@ -124,34 +135,40 @@ async def tod_show_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, ca
         [InlineKeyboardButton(f"🔄 Next {prompt_type.capitalize()}", callback_data=f"tod_next_{prompt_type}_{category}")],
         [InlineKeyboardButton("🔙 Change Category", callback_data="tod_categories")]
     ]
-    
     text = f"{emoji} *{category} - {prompt_type.capitalize()}*\n\n{prompt}"
-    await context.bot.edit_message_text(chat_id=query.message.chat.id, message_id=query.message.message_id, text=text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    await edit_game_message(update, context, text, InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# SECRET VOTING MAGIC (WYR / NHIE)
+# SECRET VOTING MAGIC (WYR)
 # ==========================================
 
 async def wyr_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    if update.callback_query:
+        await update.callback_query.answer()
     
     prompt = random.choice(WYR)
-    # Store the scenario so the private DM vote knows what it's voting on
+    
+    # Store target info for the final reveal
+    query = update.callback_query
+    inline_msg_id = query.inline_message_id if query else None
+    chat_id = query.message.chat.id if (query and query.message) else context.chat_data.get('active_chat_id')
+    msg_id = query.message.message_id if (query and query.message) else context.chat_data.get('active_msg_id')
+
     context.chat_data['active_vote'] = {
-        'chat_id': query.message.chat.id,
-        'msg_id': query.message.message_id,
+        'chat_id': chat_id,
+        'msg_id': msg_id,
+        'inline_msg_id': inline_msg_id,
         'prompt': prompt,
-        'votes': {} # Dictionary to store user_id: choice
+        'votes': {} 
     }
     
     text = f"🤷 *Would You Rather*\n\n{prompt}"
     keyboard = [[InlineKeyboardButton("🤫 Vote Secretly", callback_data="vote_secret_wyr")]]
     
-    await context.bot.edit_message_text(
-        chat_id=query.message.chat.id, message_id=query.message.message_id,
-        text=text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    if query:
+        await edit_game_message(update, context, text, InlineKeyboardMarkup(keyboard))
+    else:
+        await send_new_game_message(context, update.effective_chat.id, text, InlineKeyboardMarkup(keyboard))
 
 async def vote_secret_wyr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -160,7 +177,6 @@ async def vote_secret_wyr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     vote_data = context.chat_data.get('active_vote', {})
     prompt = vote_data.get('prompt', 'this scenario')
     
-    # Send a PRIVATE message to the user with the actual voting buttons
     private_text = f"🤫 *Secret Vote*\n\nScenario: {prompt}\n\nTap your choice below:"
     keyboard = [
         [InlineKeyboardButton("Option A", callback_data="vote_wyr_A")],
@@ -181,26 +197,25 @@ async def process_wyr_vote(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     
     vote_data = context.chat_data.get('active_vote', {})
     user_id = str(query.from_user.id)
-    
-    # Record the vote
     vote_data['votes'][user_id] = choice
     
-    # Edit the private message to confirm
-    await context.bot.edit_message_text(
-        chat_id=query.from_user.id,
-        message_id=query.message.message_id,
-        text="✅ *Vote Recorded!*\n\nWaiting for your partner to vote...",
-        parse_mode='Markdown'
-    )
+    # Confirm in private DM
+    try:
+        await context.bot.edit_message_text(
+            chat_id=query.from_user.id,
+            message_id=query.message.message_id,
+            text="✅ *Vote Recorded!*\n\nWaiting for your partner to vote...",
+            parse_mode='Markdown'
+        )
+    except Exception: pass
     
-    # Check if both players have voted (assuming 2 players)
+    # If 2 votes are in, reveal in the main chat/card
     if len(vote_data['votes']) >= 2:
         votes = vote_data['votes']
         player1 = list(votes.keys())[0]
         player2 = list(votes.keys())[1]
         
-        # Mention them nicely if possible, otherwise just say "Player 1 / Player 2"
-        p1_name = f"[User {player1[-4:]}]" # Last 4 chars of ID for privacy
+        p1_name = f"[User {player1[-4:]}]"
         p2_name = f"[User {player2[-4:]}]"
         
         result_text = (
@@ -214,50 +229,46 @@ async def process_wyr_vote(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         
         keyboard = [[InlineKeyboardButton("🎲 New Scenario", callback_data="wyr_start")]]
         
-        # Edit the ORIGINAL inline message in the shared chat
         try:
-            await context.bot.edit_message_text(
-                chat_id=vote_data['chat_id'],
-                message_id=vote_data['msg_id'],
-                text=result_text,
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        except Exception:
-            pass
+            if vote_data.get('inline_msg_id'):
+                await context.bot.edit_message_text(
+                    inline_message_id=vote_data['inline_msg_id'],
+                    text=result_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            elif vote_data.get('chat_id') and vote_data.get('msg_id'):
+                await context.bot.edit_message_text(
+                    chat_id=vote_data['chat_id'], message_id=vote_data['msg_id'],
+                    text=result_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+        except Exception as e:
+            logging.error(f"Error editing vote result: {e}")
             
-        # Clear the vote data for the next round
         context.chat_data.pop('active_vote', None)
 
 # ==========================================
-# 20 QUESTIONS (INLINE VERSION)
+# 20 QUESTIONS
 # ==========================================
 
-async def start_20q_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
+async def start_20q(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.answer()
+        
     game_data = random.choice(TWENTY_Q_WORDS)
     context.chat_data['20q'] = {
         'word': game_data['word'], 'category': game_data['category'], 'hints': game_data['hints'],
         'guesses': 0, 'max_guesses': 20, 'hints_used': 0
     }
-    context.chat_data['inline_game_chat_id'] = query.message.chat.id
-    context.chat_data['inline_game_msg_id'] = query.message.message_id
     
     text = (f"🎮 *20 Questions: Guess the Word!*\n\n"
             f"Category: *{game_data['category']}*\n"
-            f"You have 20 guesses. Type your guess in this chat!\n(Type 'hint' to use one, but it costs a guess!)")
-    keyboard = [[InlineKeyboardButton("🔄 New Word", callback_data="start_20q_inline")]]
+            f"You have 20 guesses. Type your guess below!\n(Type 'hint' to use one, but it costs a guess!)")
+    keyboard = [[InlineKeyboardButton("🔄 New Word", callback_data="start_20q")]]
+    markup = InlineKeyboardMarkup(keyboard)
     
-    await context.bot.edit_message_text(
-        chat_id=query.message.chat.id, message_id=query.message.message_id,
-        text=text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-# ==========================================
-# NORMAL TEXT GUESSING (FOR 20Q)
-# ==========================================
+    if update.callback_query:
+        await edit_game_message(update, context, text, markup)
+    else:
+        await send_new_game_message(context, update.effective_chat.id, text, markup)
 
 async def handle_20q_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if '20q' not in context.chat_data:
@@ -265,11 +276,19 @@ async def handle_20q_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     game = context.chat_data['20q']
     guess = update.message.text.lower().strip()
-    msg_id = context.chat_data.get('inline_game_msg_id')
-    chat_id = context.chat_data.get('inline_game_chat_id')
     
-    if not msg_id or not chat_id:
-        return # Ignore if not an active inline game
+    inline_msg_id = context.chat_data.get('active_inline_msg_id')
+    chat_id = context.chat_data.get('active_chat_id')
+    msg_id = context.chat_data.get('active_msg_id')
+    
+    async def edit_it(text, markup):
+        try:
+            if inline_msg_id:
+                await context.bot.edit_message_text(inline_message_id=inline_msg_id, text=text, parse_mode='Markdown', reply_markup=markup)
+            elif chat_id and msg_id:
+                await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode='Markdown', reply_markup=markup)
+        except Exception:
+            pass
 
     if guess == 'hint':
         if game['hints_used'] < len(game['hints']):
@@ -283,9 +302,7 @@ async def handle_20q_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_text += f"\n\n💀 Out of guesses! The word was *{game['word']}*."
                 del context.chat_data['20q']
             
-            try:
-                await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=new_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q_inline")]]))
-            except Exception: pass
+            await edit_it(new_text, InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q")]]))
         return
 
     game['guesses'] += 1
@@ -294,20 +311,14 @@ async def handle_20q_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if guess == game['word']:
         new_text = f"🎉 *Correct!* The word was *{game['word']}*.\nYou got it in {game['guesses']} guesses!"
         del context.chat_data['20q']
-        try:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=new_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q_inline")]]))
-        except Exception: pass
+        await edit_it(new_text, InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q")]]))
     elif remaining <= 0:
         new_text = f"💀 *Game Over!* You ran out of guesses.\nThe word was *{game['word']}*."
         del context.chat_data['20q']
-        try:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=new_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q_inline")]]))
-        except Exception: pass
+        await edit_it(new_text, InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q")]]))
     else:
         new_text = f"🎮 *20 Questions*\n\nCategory: *{game['category']}*\n❌ Incorrect. ({remaining} guesses left)."
-        try:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=new_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q_inline")]]))
-        except Exception: pass
+        await edit_it(new_text, InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Word", callback_data="start_20q")]]))
 
 # ==========================================
 # CALLBACK QUERY HANDLER (THE BRAIN)
@@ -325,14 +336,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tod_show_type_selection(update, context, category)
     elif action.startswith("tod_type_"):
         parts = action.split("_", 3)
-        prompt_type = parts[2]
-        category = parts[3]
-        await tod_show_prompt(update, context, category, prompt_type)
+        await tod_show_prompt(update, context, parts[3], parts[2])
     elif action.startswith("tod_next_"):
         parts = action.split("_", 3)
-        prompt_type = parts[2]
-        category = parts[3]
-        await tod_show_prompt(update, context, category, prompt_type)
+        await tod_show_prompt(update, context, parts[3], parts[2])
         
     # Would You Rather Secret Voting
     elif action == "wyr_start":
@@ -345,8 +352,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_wyr_vote(update, context, "Option B")
         
     # 20 Questions
-    elif action == "start_20q_inline":
-        await start_20q_inline(update, context)
+    elif action == "start_20q":
+        await start_20q(update, context)
 
 # ==========================================
 # MAIN EXECUTION
@@ -361,17 +368,22 @@ def main():
 
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # Inline Mode Handlers
+    # 1. Inline Mode Handler
     application.add_handler(InlineQueryHandler(inline_query))
-    application.add_handler(ChosenInlineResultHandler(chosen_inline_result))
     
-    # Callback Handler (for all inline button clicks)
+    # 2. Command Handlers (For DM play)
+    application.add_handler(CommandHandler("start", tod_show_categories)) # Start goes straight to games
+    application.add_handler(CommandHandler("tod", tod_show_categories))
+    application.add_handler(CommandHandler("wyr", wyr_start))
+    application.add_handler(CommandHandler("20q", start_20q))
+    
+    # 3. Callback Handler (For all inline button clicks)
     application.add_handler(CallbackQueryHandler(button_click))
     
-    # Message Handler for 20Q Guesses (only triggers if it's not a command)
+    # 4. Message Handler for 20Q Guesses
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_20q_guess), group=1)
 
-    print("✅ Bot is running in Inline Mode! Type @YourBotName in any chat to test.")
+    print("✅ Bot is running! Supports both DM commands (/start) and Inline Mode (@BotName).")
     application.run_polling()
 
 if __name__ == '__main__':
